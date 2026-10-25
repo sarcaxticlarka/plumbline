@@ -45,11 +45,11 @@
 
 ## Roadmap
 
-1. **Auth, orgs, roles** (superintendent, PM, claims reviewer, read-only owner rep). Row-level isolation in Postgres.
-2. **External anchoring** — daily chain-head → RFC 3161 timestamp authority (and/or public anchoring) so even a database admin can't rewrite history.
-3. **Original audio retention** with the transcript, hash-sealed.
+1. ~~Auth & roles~~ ✅ → next: orgs, SSO/MFA, email verification, Postgres row-level isolation.
+2. ~~External anchoring~~ ✅ (RFC 3161 + emailed head) → next: validate TSA signatures in-app; anchor to a second independent authority.
+3. ~~Original audio~~ ✅ → next: server-side transcription cross-check against the Flow/mic transcript.
 4. **Schedule linkage** — import P6/MS Project; map events to activities; show critical-path impact.
-5. **Offline-first PWA** for dead zones, with queued sync.
+5. ~~Offline-first PWA~~ ✅ → next: background sync API, per-project time zones, conflict handling for edited addenda.
 6. **Contract ingestion** — read the notice clauses from the contract PDF and set the clocks automatically (with human confirmation).
 7. **Integrations** — Procore / Autodesk Build push of daily logs, email send with delivery receipts.
 8. **Cross-project analytics** for claims managers.

@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { extract } from "@/lib/ai";
 import { validateConfig, type AiConfig } from "@/lib/ai/config";
+import { apiUser } from "@/lib/auth/guards";
 import { clientIp, fail, handle, json, rateLimit } from "@/lib/api";
 
 export const dynamic = "force-dynamic";
@@ -18,6 +19,7 @@ const SAMPLE =
 /** "Test connection": one tiny extraction with the visitor's credentials. Nothing is stored, nothing is logged. */
 export async function POST(req: Request) {
   try {
+    await apiUser(req);
     if (!rateLimit(`aitest:${clientIp(req)}`, 12, 60_000)) return fail("Too many tests — wait a minute.", 429);
     const cfg = Body.parse(await req.json()) as AiConfig;
     const problem = validateConfig(cfg);

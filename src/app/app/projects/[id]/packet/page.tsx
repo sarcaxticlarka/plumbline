@@ -1,6 +1,9 @@
 import { notFound } from "next/navigation";
 import { Download, ShieldAlert, ShieldCheck } from "lucide-react";
 import * as repo from "@/lib/db/repo";
+import { pageProject } from "@/lib/auth/guards";
+import { can } from "@/lib/auth/permissions";
+import { integrity } from "@/lib/anchor/service";
 import { formatDate, todayLocal } from "@/lib/domain/dates";
 import { noticeClock, describeClock } from "@/lib/domain/notice";
 import { CAUSE_LABEL, KIND_LABEL, PARTY_LABEL, WEATHER_STYLE, cn, shortHash } from "@/lib/format";
@@ -10,11 +13,13 @@ export const metadata = { title: "Claim packet" };
 
 export default async function Packet({ params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
-  const project = repo.getProject(id);
-  if (!project) notFound();
+  const { role, project } = await pageProject(id);
   const logs = repo.listLogs(id);
   const events = repo.listEvents(id);
-  const chain = repo.verifyProjectChain(id);
+  const integ = integrity(id);
+  const chain = integ.chain;
+  const anchorsOk = integ.anchors.filter((a) => a.ok);
+  const anchorBad = integ.anchors.find((a) => !a.ok);
   const today = todayLocal();
 
   const delays = events.filter((e) => e.kind === "delay");
@@ -44,8 +49,8 @@ export default async function Packet({ params }: { params: Promise<{ id: string 
       <div className="no-print mb-6 flex flex-wrap items-center justify-between gap-3">
         <p className="max-w-xl text-[14px] text-mute">A print-ready chronology of every claim-relevant event, its evidence, and the integrity of the record behind it.</p>
         <div className="flex flex-wrap gap-2">
-          <a href={`/api/projects/${id}/export?format=csv`} className="inline-flex h-8 items-center gap-2 rounded-full border border-line bg-card/60 px-3.5 text-[13px] font-medium hover:border-ink/40"><Download className="h-3.5 w-3.5" /> CSV</a>
-          <a href={`/api/projects/${id}/export?format=md`} className="inline-flex h-8 items-center gap-2 rounded-full border border-line bg-card/60 px-3.5 text-[13px] font-medium hover:border-ink/40"><Download className="h-3.5 w-3.5" /> Markdown</a>
+          {can(role, "export") && <><a href={`/api/projects/${id}/export?format=csv`} className="inline-flex h-8 items-center gap-2 rounded-full border border-line bg-card/60 px-3.5 text-[13px] font-medium hover:border-ink/40"><Download className="h-3.5 w-3.5" /> CSV</a>
+          <a href={`/api/projects/${id}/export?format=md`} className="inline-flex h-8 items-center gap-2 rounded-full border border-line bg-card/60 px-3.5 text-[13px] font-medium hover:border-ink/40"><Download className="h-3.5 w-3.5" /> Markdown</a></>}
           <PrintButton />
         </div>
       </div>
@@ -77,6 +82,18 @@ export default async function Packet({ params }: { params: Promise<{ id: string 
               </>
             )}
           </div>
+        </section>
+
+        <section className={cn("mt-3 border p-4 text-[13.5px] leading-relaxed", anchorBad ? "border-bad/50 bg-bad-soft" : anchorsOk.length ? "border-ok/40 bg-ok-soft/60" : "border-line")}>
+          {anchorBad ? (
+            <><b className="text-bad">External anchor MISMATCH.</b> {anchorBad.reason}</>
+          ) : anchorsOk.length ? (
+            <>
+              <b className="text-ok">Externally anchored.</b> {anchorsOk.map((a) => a.kind === "rfc3161" ? `Entry #${a.headSeq} was timestamped by an independent RFC 3161 authority (${a.detail.genTime ?? "time recorded"})` : `The chain head at entry #${a.headSeq} was emailed to ${String(a.detail.to ?? "the owner’s rep")} on ${formatDate(a.createdAt.slice(0, 10))}`).join("; ")}. These copies exist outside the system; each still matches the log above.
+            </>
+          ) : (
+            <><b>Not externally anchored.</b> The chain is internally consistent, but no independent timestamp or emailed fingerprint exists yet, so a privileged operator could in theory have rewritten the whole chain.</>
+          )}
         </section>
 
         <section className="mt-8 grid grid-cols-2 gap-4 sm:grid-cols-4">

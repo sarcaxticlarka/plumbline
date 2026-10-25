@@ -10,7 +10,7 @@ const field = "mt-1.5 h-11 w-full rounded-xl border border-line bg-field px-3.5 
 
 export function ProjectForm() {
   const router = useRouter();
-  const [f, setF] = useState({ name: "", address: "", client: "", contractor: "", contractRef: "", preset: "standard21" });
+  const [f, setF] = useState({ name: "", address: "", client: "", contractor: "", contractRef: "", ownerName: "", ownerEmail: "", preset: "standard21" });
   const [geo, setGeo] = useState<{ label: string; lat: number; lon: number }[]>([]);
   const [loc, setLoc] = useState<{ label: string; lat: number; lon: number } | null>(null);
   const [busy, setBusy] = useState(false);
@@ -69,6 +69,11 @@ export function ProjectForm() {
         <label className="block"><span className="label">Owner / client</span><input value={f.client} onChange={set("client")} className={field} /></label>
         <label className="block"><span className="label">Your company</span><input value={f.contractor} onChange={set("contractor")} className={field} /></label>
       </div>
+      <div className="grid gap-5 sm:grid-cols-2">
+        <label className="block"><span className="label">Owner’s rep name</span><input value={f.ownerName} onChange={set("ownerName")} className={field} /></label>
+        <label className="block"><span className="label">Owner’s rep email</span><input type="email" value={f.ownerEmail} onChange={set("ownerEmail")} placeholder="rep@owner.com" className={field} /></label>
+      </div>
+      <p className="-mt-2 text-[12.5px] text-mute">Notices are addressed here, and the daily chain fingerprint is emailed here so the other side holds a copy.</p>
       <label className="block"><span className="label">Contract reference</span><input value={f.contractRef} onChange={set("contractRef")} placeholder="AIA A201-2017 / Agreement dated…" className={field} /></label>
 
       <div>

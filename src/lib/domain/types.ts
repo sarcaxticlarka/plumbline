@@ -33,6 +33,8 @@ export interface Project {
   client: string;
   contractor: string;
   contractRef: string;
+  ownerName: string;
+  ownerEmail: string;
   lat: number | null;
   lon: number | null;
   rules: NoticeRules;
@@ -71,6 +73,11 @@ export interface SealedContent {
   weather: WeatherEvidence | null;
   provider: { name: "claude" | "local" | "custom"; model: string | null };
   addendumOf: string | null;
+  /** Who recorded it (account id) — absent on entries made before accounts existed. */
+  authorId?: string;
+  /** Device-reported time the entry was dictated, when it was sealed later (offline queue). Untrusted clock, shown as such. */
+  capturedAt?: string;
+  clientId?: string;
 }
 
 export interface LogEntry {

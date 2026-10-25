@@ -1,9 +1,11 @@
-import { clientIp, fail, json, rateLimit } from "@/lib/api";
+import { apiUser } from "@/lib/auth/guards";
+import { clientIp, fail, handle, json, rateLimit } from "@/lib/api";
 
 export const dynamic = "force-dynamic";
 
 /** City-level geocoding via Open-Meteo — enough to fetch site weather without any API key. */
 export async function GET(req: Request) {
+  try { await apiUser(req); } catch (e) { return handle(e); }
   if (!rateLimit(`geo:${clientIp(req)}`, 30, 60_000)) return fail("Too many lookups.", 429);
   const q = new URL(req.url).searchParams.get("q")?.trim();
   if (!q || q.length < 2) return json([]);

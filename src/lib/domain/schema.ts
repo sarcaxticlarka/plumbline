@@ -152,6 +152,8 @@ export const CreateProjectSchema = z.object({
   client: z.string().trim().max(120).default(""),
   contractor: z.string().trim().max(120).default(""),
   contractRef: z.string().trim().max(120).default(""),
+  ownerName: z.string().trim().max(120).default(""),
+  ownerEmail: z.union([z.literal(""), z.string().trim().email().max(200)]).default(""),
   lat: z.number().min(-90).max(90).nullable().default(null),
   lon: z.number().min(-180).max(180).nullable().default(null),
   rules: NoticeRulesSchema,
@@ -171,6 +173,9 @@ export const CreateLogSchema = z.object({
   source: z.enum(["voice", "text"]).default("text"),
   attachments: z.array(AttachmentSchema).max(24).default([]),
   addendumOf: z.string().nullable().default(null),
+  capturedAt: z.string().datetime().optional(),
+  /** Client-generated id so a retried (offline-queued) submission can never create a duplicate entry. */
+  clientId: z.string().min(8).max(64).optional(),
 });
 
 export const ExtractRequestSchema = z.object({

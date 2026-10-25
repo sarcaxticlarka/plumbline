@@ -1,5 +1,8 @@
 import "server-only";
 import * as repo from "./repo";
+import * as authRepo from "./repo-auth";
+import { hashPassword } from "@/lib/auth/password";
+import type { Role } from "@/lib/auth/permissions";
 import { addDays, todayLocal, toUtc } from "@/lib/domain/dates";
 import { fetchSiteWeatherRange } from "@/lib/weather";
 import { RULE_PRESETS, type WeatherEvidence } from "@/lib/domain/types";
@@ -24,6 +27,22 @@ const T = {
   delivery: `Clear, 60 degrees. Eight carpenters, six laborers and four drywall installers on site. The supplier was late on the drywall delivery and the truck didn't show until three in the afternoon, so the drywall crew stood around and we lost five hours of hanging. Carpenters kept framing level 3. Toolbox talk on material handling. No incidents.`,
   pour: `Clear and 57 degrees. 14 ironworkers, 10 carpenters and 6 laborers on site. 12 concrete finishers from Metro Ready Mix placed the level 4 slab, about 180 yards, and finished by four. Laborers stripped forms and cleaned up. Toolbox talk on concrete placement, no incidents. The city inspector visited and the post-pour walkthrough was fine.`,
 };
+
+/** Demo accounts (shown on the login page only when PLUMBLINE_DEMO is on). Shared password, demo data only. */
+export const DEMO_PASSWORD = "plumbline-demo";
+export const DEMO_USERS: { email: string; name: string; role: Role; blurb: string }[] = [
+  { email: "maya@northline.test", name: "Maya Chen", role: "superintendent", blurb: "Dictates & seals logs" },
+  { email: "dev@northline.test", name: "Dev Patel", role: "pm", blurb: "Sends notices, anchors, manages team" },
+  { email: "priya@northline.test", name: "Priya Nair", role: "claims_reviewer", blurb: "Reviews, exports, anchors" },
+  { email: "rep@harborpoint.test", name: "Jordan Reyes", role: "owner_rep", blurb: "Read-only owner’s rep" },
+];
+const SCHOOL_SUPER = { email: "luis@northline.test", name: "Luis Ortega" };
+
+async function ensureUser(email: string, name: string) {
+  const existing = authRepo.getUserByEmail(email);
+  if (existing) return { id: existing.id, email, name: existing.name };
+  return authRepo.createUser(email, name, await hashPassword(DEMO_PASSWORD));
+}
 
 let seeding: Promise<void> | null = null;
 
@@ -69,7 +88,13 @@ async function seed() {
   const order = [T.progressA, T.progressB, T.rfi, T.differing, T.change, T.delivery, T.progressB, T.pour];
   rest.forEach((d, i) => (plan[d] = order[i % order.length]));
 
+  const people = new Map<string, { id: string }>();
+  for (const u of DEMO_USERS) people.set(u.email, await ensureUser(u.email, u.name));
+  people.set(SCHOOL_SUPER.email, await ensureUser(SCHOOL_SUPER.email, SCHOOL_SUPER.name));
+
   const project = repo.insertProject({
+    ownerName: "Jordan Reyes",
+    ownerEmail: "rep@harborpoint.test",
     name: "Harbor Point Tower — Podium & Levels 3–6",
     address: "Jersey City, NJ",
     client: "Harbor Point Development LLC",
@@ -80,11 +105,13 @@ async function seed() {
     rules: RULE_PRESETS.tight7.rules,
   });
 
+  for (const u of DEMO_USERS) authRepo.setMember(project.id, people.get(u.email)!.id, u.role);
+
   for (const d of use) {
     const lateByDays = d === use[4] ? 3 : 0; // one entry written up three days late: shows the contemporaneity check
     await sealLog(
       project.id,
-      { logDate: d, author: AUTHOR, transcript: plan[d], source: "voice", attachments: [], addendumOf: null },
+      { logDate: d, author: AUTHOR, authorId: people.get("maya@northline.test")!.id, transcript: plan[d], source: "voice", attachments: [], addendumOf: null },
       { createdAt: `${addDays(d, lateByDays)}T14:30:00.000Z`, forceLocal: true, weather: get(d) },
     );
   }
@@ -95,7 +122,23 @@ async function seed() {
   }
 
   /* second, quieter project */
+  // The owner's rep was emailed the chain head part-way through (demo record): this is what exposes a history rewrite.
+  const anchorAt = repo.listLogs(project.id).find((l) => l.seq === 7);
+  if (anchorAt) {
+    repo.insertAnchor({
+      projectId: project.id,
+      headSeq: anchorAt.seq,
+      headHash: anchorAt.hash,
+      kind: "email",
+      status: "recorded",
+      detail: { to: "rep@harborpoint.test", note: "Daily chain head emailed to the owner’s rep (demo record).", demo: true },
+      createdAt: `${anchorAt.content.logDate}T22:00:00.000Z`,
+    });
+  }
+
   const school = repo.insertProject({
+    ownerName: "Newark Public Schools",
+    ownerEmail: "facilities@npsd.test",
     name: "Riverside Elementary — Gym Addition",
     address: "Newark, NJ",
     client: "Newark Public Schools",
@@ -105,12 +148,14 @@ async function seed() {
     lon: -74.1724,
     rules: RULE_PRESETS.publicWorks10.rules,
   });
+  for (const u of DEMO_USERS.filter((x) => x.role === "pm" || x.role === "claims_reviewer")) authRepo.setMember(school.id, people.get(u.email)!.id, u.role);
+  authRepo.setMember(school.id, people.get(SCHOOL_SUPER.email)!.id, "superintendent");
   const sDays = use.slice(-4);
   const sPlan = [T.progressA, T.pour, T.rfi, T.progressB];
   for (let i = 0; i < sDays.length; i++) {
     await sealLog(
       school.id,
-      { logDate: sDays[i], author: "Luis Ortega", transcript: sPlan[i], source: "text", attachments: [], addendumOf: null },
+      { logDate: sDays[i], author: "Luis Ortega", authorId: people.get(SCHOOL_SUPER.email)!.id, transcript: sPlan[i], source: "text", attachments: [], addendumOf: null },
       { createdAt: `${sDays[i]}T14:30:00.000Z`, forceLocal: true, weather: null },
     );
   }

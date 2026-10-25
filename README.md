@@ -29,6 +29,11 @@ Existing daily-report apps help you *record* the day. Plumbline is built around 
 | 📄 **Claim packet** | Print-ready delay chronology, hours by cause and party, evidence scores, integrity statement. CSV / Markdown exports. |
 | 🔑 **Bring your own key** | No code or env vars: paste an Anthropic key — or any OpenAI-compatible API (OpenAI, OpenRouter, Groq, Together, Ollama) — in **Settings**, test it in one click. Stays in your browser; sent only as a header per request. |
 | 🗣️ **Built for Wispr Flow** | Focused entry box, dictation-burst detection, a Flow-style bar, and **Guide me by voice**: Plumbline asks each missing detail, you answer with your hotkey. See [Wispr Flow guide](docs/WISPR_FLOW.md). |
+| 👥 **Accounts & roles** | Sign-in with per-project roles: **superintendent** (dictate, seal), **PM** (+ send notices, anchor, manage team), **claims reviewer** (read, export, anchor, send), **owner’s rep** (read-only). Non-members can’t even see a project exists. |
+| ⚓ **Chain anchoring** | The chain-head fingerprint is **timestamped by an independent RFC 3161 authority** and **emailed to the owner’s rep**. A full-history rewrite (which a hash chain alone can’t catch) is exposed by the mismatch. |
+| 🎙️ **Original audio, sealed** | Record the voice alongside the transcript; the file’s SHA-256 is part of the entry’s seal. Plays back with HTTP Range. |
+| ✉️ **Email notices + receipts** | Send the drafted notice from the app (SMTP or Resend). The receipt (message-id, server reply, body hash) is stored; with no provider configured it is recorded **but not marked sent**. |
+| 📴 **Offline PWA** | Installable. The composer opens with no signal, previews in the browser, queues the entry (photos & audio included) in IndexedDB and seals it once, automatically, when you reconnect — with the capture time kept. |
 | 🧾 **Gap detection** | Missing workdays and late (non-contemporaneous) entries are surfaced, not hidden. |
 
 ## Quick start
@@ -59,10 +64,19 @@ cp .env.example .env.local   # then set ANTHROPIC_API_KEY
 npm test             # 39 tests: domain logic, extractor, SQLite integration
 npm run typecheck
 npm run build && npm start
+
+# Real-Chrome end-to-end tests (need Google Chrome + a production server on :3100 with PLUMBLINE_DEMO=1)
+npm run e2e:offline  # service worker, go offline, queue, reconnect, exactly-once seal
+npm run e2e:audio    # sign-in UI, fake microphone, sealed + playable audio
 ```
+
+## Demo accounts
+
+With `PLUMBLINE_DEMO=1` (default in dev) the login page has one-click roles on a seeded project: **Maya Chen** (superintendent), **Dev Patel** (PM), **Priya Nair** (claims reviewer), **Jordan Reyes** (owner’s rep). Shared demo password `plumbline-demo`. Real deployments: leave demo mode off and use *Create account*; a PM invites people by email from the **Team** tab.
 
 ## Try this
 
+0. Landing → **Open the live demo** → pick *Dev Patel (PM)*. On the project, click **Anchor now** (a real RFC 3161 timestamp), then **Rewrite whole chain**: the chain still says verified, the anchor shouts *mismatch*.
 1. Landing page → edit one word in the live chain playground.
 2. **Open the live demo → Dictate today's log →** click *Wind day* (or dictate your own). Watch the evidence ring, the gap questions and the notice clock appear. Answer a gap by voice.
 3. **Seal entry**, then **Notices → Draft notice**.
@@ -81,7 +95,11 @@ Read more: [Wispr Flow guide](docs/WISPR_FLOW.md) · [Research](docs/RESEARCH.md
 - **Not legal advice.** Notice-period presets are illustrative; users must set windows from their own contract.
 - **Tamper-*evident*, not tamper-proof.** Someone with write access to the whole database could recompute the chain. External anchoring (RFC 3161 timestamps, emailed chain heads) is the planned fix — see the threat model.
 - **Bring-your-own-key** sends the key to the server per request (never stored or logged). On a hosted deployment that means trusting the host; for sensitive projects self-host. Private/internal API URLs are blocked in production (SSRF guard); local models need a self-hosted Plumbline.
-- No authentication / multi-tenancy yet; single-operator demo. Original audio is not retained yet.
+- Accounts are email + password only: no email verification, password reset, SSO or MFA yet, and org-level tenancy is project-membership based.
+- **Timestamps:** the app checks that the TSA granted the request and echoed our digest, and stores the `.tsr`; it does not itself validate the TSA’s signature chain — verify with `openssl ts -verify` (command shown in the UI).
+- **Offline:** the service worker only runs in production builds; a page must have been opened once online to be available offline; the capture time comes from the phone’s clock (shown as device-reported); dates use the server’s time zone (no per-project time zone yet).
+- **Email:** delivery *receipts* are SMTP acceptance (plus Resend webhooks if configured); true inbox delivery can’t be proven by any sender.
+- The embedded browser pane of some tools blocks service workers; test PWA behaviour in Chrome.
 - The offline extractor covers common site phrasing; Claude handles the long tail.
 
 ## License

@@ -1,15 +1,16 @@
 import * as repo from "@/lib/db/repo";
 import { delayRegisterCsv, noticeDeadlinesIcs, packetMarkdown } from "@/lib/domain/export";
-import { fail } from "@/lib/api";
+import { apiProject } from "@/lib/auth/guards";
+import { fail, handle } from "@/lib/api";
 
 export const dynamic = "force-dynamic";
 
 const slug = (s: string) => s.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(0, 40);
 
 export async function GET(req: Request, { params }: { params: Promise<{ id: string }> }) {
+  try {
   const { id } = await params;
-  const project = repo.getProject(id);
-  if (!project) return fail("Project not found", 404);
+  const { project } = await apiProject(req, id, "export");
   const format = new URL(req.url).searchParams.get("format") ?? "csv";
   const events = repo.listEvents(id);
 
@@ -26,4 +27,7 @@ export async function GET(req: Request, { params }: { params: Promise<{ id: stri
   if (format === "md")
     return send(packetMarkdown(project, events, repo.verifyProjectChain(id), repo.listLogs(id).length), "text/markdown", "record.md");
   return fail("format must be csv, ics or md", 400);
+  } catch (e) {
+    return handle(e);
+  }
 }

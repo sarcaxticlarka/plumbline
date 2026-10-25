@@ -1,7 +1,7 @@
 "use client";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { BookOpen, CalendarClock, FileText } from "lucide-react";
+import { BookOpen, CalendarClock, FileText, Users } from "lucide-react";
 import { cn } from "@/lib/format";
 
 export function ProjectTabs({ id, urgent }: { id: string; urgent: number }) {
@@ -11,6 +11,7 @@ export function ProjectTabs({ id, urgent }: { id: string; urgent: number }) {
     { href: base, label: "Logbook", icon: BookOpen, active: path === base || path.startsWith(`${base}/logs`) || path === `${base}/new` },
     { href: `${base}/notices`, label: "Notices", icon: CalendarClock, active: path.startsWith(`${base}/notices`), badge: urgent },
     { href: `${base}/packet`, label: "Claim packet", icon: FileText, active: path.startsWith(`${base}/packet`) },
+    { href: `${base}/team`, label: "Team", icon: Users, active: path.startsWith(`${base}/team`) },
   ];
   return (
     <div className="no-print mb-8 flex gap-0 overflow-x-auto border-b border-line md:gap-1">

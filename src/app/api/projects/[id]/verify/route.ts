@@ -1,10 +1,15 @@
-import * as repo from "@/lib/db/repo";
-import { fail, json } from "@/lib/api";
+import { apiProject } from "@/lib/auth/guards";
+import { integrity } from "@/lib/anchor/service";
+import { handle, json } from "@/lib/api";
 
 export const dynamic = "force-dynamic";
 
-export async function GET(_req: Request, { params }: { params: Promise<{ id: string }> }) {
-  const { id } = await params;
-  if (!repo.getProject(id)) return fail("Project not found", 404);
-  return json(repo.verifyProjectChain(id));
+export async function GET(req: Request, { params }: { params: Promise<{ id: string }> }) {
+  try {
+    const { id } = await params;
+    await apiProject(req, id, "project.read");
+    return json(integrity(id));
+  } catch (e) {
+    return handle(e);
+  }
 }

@@ -6,13 +6,15 @@ import { NoticeCard } from "@/components/app/NoticeCard";
 import { ResetDemo } from "@/components/app/DemoControls";
 import { CountUp, LinkButton, ScoreRing } from "@/components/ui";
 import { demoEnabled } from "@/lib/api";
+import { pageUser } from "@/lib/auth/guards";
 import { cn, shortHash } from "@/lib/format";
 
 export const metadata = { title: "Site control" };
 
 export default async function Dashboard() {
+  const user = await pageUser();
   const today = todayLocal();
-  const all = await portfolio(today);
+  const all = await portfolio(today, user.id);
   const urgent = all
     .flatMap((o) => sortedNotices(o.events, today).map((n) => ({ ...n, project: o.project })))
     .filter((n) => !["sent", "waived"].includes(n.clock.state))
@@ -44,6 +46,14 @@ export default async function Dashboard() {
           <LinkButton href="/app/projects/new" variant="ghost" size="sm"><Plus className="h-3.5 w-3.5" /> New project</LinkButton>
         </div>
       </div>
+
+      {all.length === 0 && (
+        <div className="mt-10 border border-line p-10 text-center">
+          <div className="cond text-[44px]">No projects yet</div>
+          <p className="mx-auto mt-2 max-w-md text-mute">Create one to start the record — or ask a project manager to add {user.email} to theirs.</p>
+          <div className="mt-6 flex justify-center"><LinkButton href="/app/projects/new" variant="safety">Start a project</LinkButton></div>
+        </div>
+      )}
 
       <div className="mt-10 grid grid-cols-2 border-y border-ink lg:grid-cols-4">
         {kpis.map((k, i) => (

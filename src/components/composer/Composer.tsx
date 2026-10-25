@@ -2,15 +2,19 @@
 import { AnimatePresence, motion } from "motion/react";
 import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Camera, Check, ExternalLink, Link2, Loader2, Mic, SkipForward, Square, Volume2, VolumeX, X } from "lucide-react";
+import { Camera, Check, CloudOff, ExternalLink, HardDriveDownload, Link2, Loader2, Mic, Music, SkipForward, Square, Volume2, VolumeX, X } from "lucide-react";
 import type { Preview } from "@/lib/services";
 import type { Attachment, Gap, NoticeRules } from "@/lib/domain/types";
+import { extractLocal } from "@/lib/ai/local";
+import { evaluateEntry } from "@/lib/domain/evidence";
 import { aiHeaders } from "@/lib/ai/client-config";
+import { enqueue } from "@/lib/offline/outbox";
 import { Button } from "@/components/ui";
 import { EngineChip } from "@/components/app/EngineChip";
 import { cn, shortHash } from "@/lib/format";
 import { FlowBar, type FlowState } from "./FlowBar";
 import { PreviewPanel } from "./PreviewPanel";
+import { useRecorder } from "./useRecorder";
 import { useSpeech } from "./useSpeech";
 
 const SAMPLES: { label: string; text: string }[] = [
@@ -44,6 +48,7 @@ const STARTERS: Record<string, string> = {
 
 const gapId = (g: Gap) => `${g.scope}-${g.eventIndex ?? "e"}-${g.key}`;
 const wordCount = (s: string) => (s.match(/\S+/g) ?? []).length;
+const mmss = (s: number) => `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`;
 
 /** The text that was added between two versions of the box (common prefix/suffix trimmed). */
 function inserted(prev: string, next: string): string {
@@ -54,25 +59,57 @@ function inserted(prev: string, next: string): string {
   return next.slice(p, next.length - s);
 }
 
+/** Photos and recordings. `att` is null until the file has actually reached the server (it stays null offline). */
+interface Media {
+  key: string;
+  kind: "image" | "audio";
+  name: string;
+  mime: string;
+  url: string;
+  blob: Blob;
+  att: Attachment | null;
+  seconds?: number;
+}
+
+class NetErr extends Error {}
+
+/** In the browser, offline: same rules engine and evidence scoring as the server, minus weather. */
+function localPreview(text: string, logDate: string, images: number): Preview {
+  const extraction = extractLocal(text);
+  return {
+    extraction,
+    provider: { name: "local", model: null },
+    note: "Offline — previewing with the built-in engine. Weather corroboration and your chosen model resume when you reconnect.",
+    evidence: evaluateEntry(extraction, text, { photos: images, logDate, recordedOn: logDate, weatherVerdicts: extraction.events.map(() => "unavailable") }),
+    weather: null,
+    weatherNotes: [],
+    weatherVerdicts: extraction.events.map(() => "unavailable" as const),
+  };
+}
+
 interface Props {
   project: { id: string; name: string; rules: NoticeRules };
   today: string;
   serverEngine: { live: boolean; label: string };
+  userName: string;
 }
 
-export function Composer({ project, today, serverEngine }: Props) {
+export function Composer({ project, today, serverEngine, userName }: Props) {
   const router = useRouter();
   const [text, setText] = useState("");
   const [date, setDate] = useState(today);
-  const [author, setAuthor] = useState("");
-  const [photos, setPhotos] = useState<{ att: Attachment; url: string }[]>([]);
+  const [author, setAuthor] = useState(userName);
+  const [media, setMedia] = useState<Media[]>([]);
   const [preview, setPreview] = useState<Preview | null>(null);
   const [loading, setLoading] = useState(false);
   const [sealing, setSealing] = useState(false);
   const [sealed, setSealed] = useState<{ seq: number; hash: string; prev: string } | null>(null);
+  const [queued, setQueued] = useState<{ words: number; files: number } | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const [dragging, setDragging] = useState(false);
   const [focused, setFocused] = useState(false);
+  const [online, setOnline] = useState(true);
+  const [keepAudio, setKeepAudio] = useState(true);
 
   // Voice: dictation bursts typed in by Wispr Flow (or any dictation tool) vs words from the built-in mic.
   const [bursts, setBursts] = useState({ count: 0, words: 0 });
@@ -88,6 +125,8 @@ export function Composer({ project, today, serverEngine }: Props) {
   const area = useRef<HTMLTextAreaElement>(null);
   const fileRef = useRef<HTMLInputElement>(null);
   const usedVoice = useRef(false);
+  const autoRec = useRef(false);
+  const clientId = useRef(typeof crypto !== "undefined" && crypto.randomUUID ? crypto.randomUUID() : String(Date.now()));
   const flashTimer = useRef<ReturnType<typeof setTimeout>>(undefined);
 
   const showFlash = useCallback((msg: string) => {
@@ -97,8 +136,13 @@ export function Composer({ project, today, serverEngine }: Props) {
   }, []);
 
   useEffect(() => {
-    try { setAuthor(localStorage.getItem("plumbline.author") || "Maya Chen"); } catch { setAuthor("Maya Chen"); }
+    try { const saved = localStorage.getItem("plumbline.author"); if (saved) setAuthor(saved); } catch { /* private mode */ }
     area.current?.focus(); // Flow types into whatever is focused: be ready the moment the page opens.
+    setOnline(navigator.onLine);
+    const on = () => setOnline(true), off = () => setOnline(false);
+    window.addEventListener("online", on);
+    window.addEventListener("offline", off);
+    return () => { window.removeEventListener("online", on); window.removeEventListener("offline", off); };
   }, []);
   useEffect(() => {
     if (!author) return;
@@ -120,8 +164,44 @@ export function Composer({ project, today, serverEngine }: Props) {
     setText((cur) => (cur && !/\s$/.test(cur) ? cur + " " : cur) + t);
   }, []);
 
+  /* ---------- media: upload when online, keep the Blob when not ---------- */
+  const uploadMedia = useCallback(async (m: Media): Promise<Attachment | null> => {
+    const fd = new FormData();
+    fd.append("file", new File([m.blob], m.name, { type: m.mime }));
+    let res: Response;
+    try { res = await fetch("/api/uploads", { method: "POST", body: fd }); } catch { return null; }
+    const body = await res.json().catch(() => ({}));
+    if (res.status >= 500) return null;
+    if (!res.ok) throw new Error(body.error ?? "Upload failed");
+    return body as Attachment;
+  }, []);
+
+  const addMedia = useCallback(async (m: Media) => {
+    setMedia((x) => (x.some((y) => y.key === m.key) ? x : [...x, m]));
+    if (!navigator.onLine) return;
+    try {
+      const att = await uploadMedia(m);
+      if (att) setMedia((x) => x.map((y) => (y.key === m.key ? { ...y, att } : y)));
+    } catch (e) {
+      setErr((e as Error).message);
+      setMedia((x) => x.filter((y) => y.key !== m.key));
+    }
+  }, [uploadMedia]);
+
+  function addFiles(files: FileList | File[]) {
+    for (const f of Array.from(files)) {
+      if (!f.type.startsWith("image/")) continue;
+      addMedia({ key: `${f.name}-${f.size}-${f.lastModified}`, kind: "image", name: f.name, mime: f.type, url: URL.createObjectURL(f), blob: f, att: null });
+    }
+  }
+
+  const recorder = useRecorder((blob, mime, seconds) => {
+    const ext = mime.includes("mp4") ? "m4a" : mime.includes("ogg") ? "ogg" : "webm";
+    addMedia({ key: `rec-${Date.now()}`, kind: "audio", name: `entry-audio-${new Date().toISOString().slice(0, 19).replace(/[:T]/g, "-")}.${ext}`, mime, url: URL.createObjectURL(blob), blob, att: null, seconds });
+  });
+
   /* ---------- voice commands reach seal/skip through a ref so they never see stale state ---------- */
-  const cmd = useRef<{ seal: () => void; skip: () => void; stopMic: () => void }>({ seal: () => {}, skip: () => {}, stopMic: () => {} });
+  const cmd = useRef<{ seal: () => void; skip: () => void }>({ seal: () => {}, skip: () => {} });
 
   const onFinal = useCallback(
     (t: string) => {
@@ -155,41 +235,76 @@ export function Composer({ project, today, serverEngine }: Props) {
     [append, showFlash],
   );
   const speech = useSpeech(onFinal);
-  cmd.current.stopMic = speech.stop;
 
+  // The built-in mic and the original-audio recording start and stop together (Flow users can record on its own).
+  const startMic = useCallback(() => {
+    speech.start();
+    if (keepAudio && !recorder.recording) { autoRec.current = true; recorder.start(); }
+  }, [speech, keepAudio, recorder]);
+  const stopMic = useCallback(() => {
+    speech.stop();
+    if (autoRec.current) { autoRec.current = false; recorder.stop(); }
+  }, [speech, recorder]);
+
+  /* ---------- sealing, or queueing on this device when there's no signal ---------- */
   const seal = useCallback(async () => {
     if (text.trim().length < 20) return;
     setSealing(true);
     setErr(null);
-    cmd.current.stopMic();
+    if (speech.listening) stopMic();
+    if (recorder.recording) recorder.stop();
+    const base = {
+      logDate: date,
+      author: author || "Superintendent",
+      transcript: text.trim(),
+      source: usedVoice.current || bursts.count > 0 ? "voice" : "text",
+      addendumOf: null,
+    };
+    const queueIt = async () => {
+      const done = media.filter((m) => m.att).map((m) => m.att!);
+      const files = media.filter((m) => !m.att).map((m) => ({ blob: m.blob, name: m.name, mime: m.mime }));
+      await enqueue({ id: clientId.current, projectId: project.id, createdAt: new Date().toISOString(), body: { ...base, attachments: done }, files });
+      setQueued({ words: wordCount(text), files: media.length });
+      setSealing(false);
+      setTimeout(() => router.push(`/app/projects/${project.id}`), 3600);
+    };
+    if (!navigator.onLine) return queueIt();
     try {
+      const attachments: Attachment[] = [];
+      for (const m of media) {
+        const att = m.att ?? (await uploadMedia(m));
+        if (!att) throw new NetErr();
+        attachments.push(att);
+      }
       const res = await fetch(`/api/projects/${project.id}/logs`, {
         method: "POST",
         headers: { "content-type": "application/json", ...aiHeaders() },
-        body: JSON.stringify({
-          logDate: date,
-          author: author || "Superintendent",
-          transcript: text.trim(),
-          source: usedVoice.current || bursts.count > 0 ? "voice" : "text",
-          attachments: photos.map((p) => p.att),
-          addendumOf: null,
-        }),
+        body: JSON.stringify({ ...base, attachments, clientId: clientId.current }),
       });
       const body = await res.json();
+      if (res.status >= 500) throw new NetErr();
       if (!res.ok) throw new Error(body.error ?? "Could not seal the entry");
       setSealed({ seq: body.entry.seq, hash: body.entry.hash, prev: body.entry.prevHash });
       setTimeout(() => router.push(`/app/projects/${project.id}/logs/${body.entry.id}`), 2300);
     } catch (e) {
+      // A dropped connection mid-seal is not an error to the superintendent: keep the entry safe and sync later.
+      if (e instanceof NetErr || e instanceof TypeError) return queueIt();
       setErr((e as Error).message);
       setSealing(false);
     }
-  }, [text, date, author, photos, bursts.count, project.id, router]);
+  }, [text, date, author, media, bursts.count, project.id, router, uploadMedia, speech.listening, stopMic, recorder]);
   cmd.current.seal = () => void seal();
 
-  /* ---------- live extraction, debounced; stale responses are aborted ---------- */
+  /* ---------- live extraction (server), or in-browser when offline; stale responses are aborted ---------- */
+  const images = media.filter((m) => m.kind === "image").length;
   useEffect(() => {
     if (text.trim().length < 20) {
       setPreview(null);
+      setLoading(false);
+      return;
+    }
+    if (!online) {
+      setPreview(localPreview(text, date, images));
       setLoading(false);
       return;
     }
@@ -200,14 +315,16 @@ export function Composer({ project, today, serverEngine }: Props) {
         const res = await fetch(`/api/extract?project=${project.id}`, {
           method: "POST",
           headers: { "content-type": "application/json", ...aiHeaders() },
-          body: JSON.stringify({ transcript: text, logDate: date, photos: photos.length }),
+          body: JSON.stringify({ transcript: text, logDate: date, photos: images }),
           signal: ctl.signal,
         });
         if (!res.ok) throw new Error((await res.json()).error ?? "Preview failed");
         setPreview(await res.json());
         setErr(null);
       } catch (e) {
-        if ((e as Error).name !== "AbortError") setErr((e as Error).message);
+        if ((e as Error).name === "AbortError") return;
+        if (e instanceof TypeError) setPreview(localPreview(text, date, images)); // network dropped
+        else setErr((e as Error).message);
       } finally {
         if (!ctl.signal.aborted) setLoading(false);
       }
@@ -216,7 +333,7 @@ export function Composer({ project, today, serverEngine }: Props) {
       clearTimeout(t);
       ctl.abort();
     };
-  }, [text, date, photos.length, project.id]);
+  }, [text, date, images, project.id, online]);
 
   /* ---------- typing vs dictation: a burst of words arriving at once is voice ---------- */
   function onType(e: React.ChangeEvent<HTMLTextAreaElement>) {
@@ -285,28 +402,13 @@ export function Composer({ project, today, serverEngine }: Props) {
     focusEnd();
   }
 
-  async function addFiles(files: FileList | File[]) {
-    for (const f of Array.from(files)) {
-      if (!f.type.startsWith("image/")) continue;
-      const fd = new FormData();
-      fd.append("file", f);
-      const res = await fetch("/api/uploads", { method: "POST", body: fd });
-      if (!res.ok) {
-        setErr((await res.json()).error ?? "Upload failed");
-        continue;
-      }
-      const att = (await res.json()) as Attachment;
-      setPhotos((p) => (p.some((x) => x.att.sha256 === att.sha256) ? p : [...p, { att, url: URL.createObjectURL(f) }]));
-    }
-  }
-
   const words = wordCount(text);
   const ready = text.trim().length >= 20 && !sealing;
   const voiceWords = bursts.words + micWords;
   const savedSec = Math.max(0, Math.round((voiceWords / 40) * 60 - (voiceWords / 150) * 60));
   const fmt = (s: number) => (s >= 60 ? `${Math.floor(s / 60)}m ${String(s % 60).padStart(2, "0")}s` : `${s}s`);
 
-  const flow: FlowState = sealed
+  const flow: FlowState = sealed || queued
     ? { kind: "hidden" }
     : speech.listening
       ? { kind: "mic" }
@@ -330,7 +432,7 @@ export function Composer({ project, today, serverEngine }: Props) {
         >
           <div className="flex flex-wrap items-center gap-3">
             <button
-              onClick={speech.listening ? speech.stop : speech.start}
+              onClick={speech.listening ? stopMic : startMic}
               aria-label={speech.listening ? "Stop dictation" : "Start dictation"}
               className={cn("relative grid h-14 w-14 shrink-0 place-items-center rounded-full transition-transform active:scale-95", speech.listening ? "bg-safety text-on-safety" : "bg-ink text-paper hover:bg-white")}
             >
@@ -341,7 +443,10 @@ export function Composer({ project, today, serverEngine }: Props) {
               <div className="text-[15px] font-semibold">{speech.listening ? "Listening — talk like you would to your foreman" : "Dictate the day"}</div>
               <div className="text-[13px] text-mute">Use <b className="text-ink-2">Wispr Flow</b> into the box, or tap the built-in mic.</div>
             </div>
-            <div className="w-full"><EngineChip server={serverEngine} variant="inline" /></div>
+            <div className="flex w-full flex-wrap items-center gap-2">
+              <EngineChip server={serverEngine} variant="inline" />
+              {!online && <span className="flex items-center gap-2 border border-warn/50 bg-warn-soft px-3 py-1.5 font-mono text-[11px] uppercase tracking-[0.05em] text-warn"><CloudOff className="h-3.5 w-3.5" /> Offline — entry will be saved on this device</span>}
+            </div>
           </div>
 
           {/* voice strip: proof that the entry is being spoken, not typed */}
@@ -357,6 +462,24 @@ export function Composer({ project, today, serverEngine }: Props) {
               <a href="https://ref.wisprflow.ai/hhg" target="_blank" rel="noreferrer" className="flex items-center gap-1.5 text-ink-2 normal-case tracking-normal underline underline-offset-4 hover:text-safety">Hold your Wispr Flow hotkey and speak — new here? Get Flow <ExternalLink className="h-3 w-3" /></a>
             )}
           </div>
+
+          {/* original audio */}
+          <div className="mt-3 flex flex-wrap items-center gap-3 text-[12.5px]">
+            <button
+              onClick={() => (recorder.recording ? recorder.stop() : recorder.start())}
+              data-cursor
+              className={cn("flex items-center gap-2 border px-3 py-1.5 font-mono text-[11px] uppercase tracking-[0.05em] transition-colors", recorder.recording ? "border-bad bg-bad-soft text-bad" : "border-line text-ink-2 hover:border-ink/50")}
+            >
+              <span className={cn("h-2 w-2 rounded-full", recorder.recording ? "animate-pulse bg-bad" : "bg-mute")} />
+              {recorder.recording ? `Recording ${mmss(recorder.seconds)} — stop` : "Record original audio"}
+            </button>
+            <label className="flex cursor-pointer items-center gap-2 text-mute">
+              <input type="checkbox" checked={keepAudio} onChange={(e) => setKeepAudio(e.target.checked)} className="accent-[var(--color-safety)]" />
+              keep audio when I use the built-in mic
+            </label>
+            <span className="text-mute">Hashed and sealed with the entry — works while dictating with Flow too.</span>
+          </div>
+          {recorder.error && <p className="mt-2 text-[12.5px] text-bad">{recorder.error}</p>}
 
           <div className="mt-4 grid grid-cols-2 gap-3">
             <label className="block">
@@ -416,23 +539,33 @@ export function Composer({ project, today, serverEngine }: Props) {
           </div>
           {speech.supported && <p className="mt-3 text-[12px] text-mute">Built-in mic commands: <span className="hash">“scratch that”</span> · <span className="hash">“new paragraph”</span> · <span className="hash">“next question”</span> · <span className="hash">“seal entry”</span></p>}
 
-          {/* photos */}
+          {/* photos & audio */}
           <div className="mt-5 border-t border-dashed border-line pt-4">
             <div className="flex items-center gap-3">
               <button onClick={() => fileRef.current?.click()} className="flex items-center gap-2 border border-line px-3.5 py-2 text-[13px] font-medium hover:border-ink/40">
                 <Camera className="h-4 w-4" /> Add photos
               </button>
               <input ref={fileRef} type="file" accept="image/*" multiple hidden onChange={(e) => e.target.files && addFiles(e.target.files)} />
-              <span className="text-[12.5px] text-mute">Each photo’s SHA-256 is sealed into the entry.</span>
+              <span className="text-[12.5px] text-mute">Each file’s SHA-256 is sealed into the entry.</span>
             </div>
-            {photos.length > 0 && (
-              <div className="mt-3 flex flex-wrap gap-2">
-                {photos.map((p) => (
-                  <motion.div key={p.att.sha256} initial={{ scale: 0.8, opacity: 0 }} animate={{ scale: 1, opacity: 1 }} className="group relative h-16 w-16 overflow-hidden border border-line">
-                    {/* eslint-disable-next-line @next/next/no-img-element */}
-                    <img src={p.url} alt={p.att.name} className="h-full w-full object-cover" />
-                    <button onClick={() => setPhotos((x) => x.filter((y) => y !== p))} className="absolute right-0.5 top-0.5 hidden h-5 w-5 place-items-center rounded-full bg-black/80 text-white group-hover:grid" aria-label="Remove photo"><X className="h-3 w-3" /></button>
-                    <span className="hash absolute inset-x-0 bottom-0 bg-black/75 text-center text-[8.5px] text-white">{p.att.sha256.slice(0, 8)}</span>
+            {media.length > 0 && (
+              <div className="mt-3 space-y-2">
+                <div className="flex flex-wrap gap-2">
+                  {media.filter((m) => m.kind === "image").map((m) => (
+                    <motion.div key={m.key} initial={{ scale: 0.8, opacity: 0 }} animate={{ scale: 1, opacity: 1 }} className="group relative h-16 w-16 overflow-hidden border border-line">
+                      {/* eslint-disable-next-line @next/next/no-img-element */}
+                      <img src={m.url} alt={m.name} className="h-full w-full object-cover" />
+                      <button onClick={() => setMedia((x) => x.filter((y) => y.key !== m.key))} className="absolute right-0.5 top-0.5 hidden h-5 w-5 place-items-center rounded-full bg-black/80 text-white group-hover:grid" aria-label="Remove photo"><X className="h-3 w-3" /></button>
+                      <span className={cn("hash absolute inset-x-0 bottom-0 bg-black/75 text-center text-[8.5px]", m.att ? "text-white" : "text-warn")}>{m.att ? m.att.sha256.slice(0, 8) : "on device"}</span>
+                    </motion.div>
+                  ))}
+                </div>
+                {media.filter((m) => m.kind === "audio").map((m) => (
+                  <motion.div key={m.key} initial={{ opacity: 0, y: 6 }} animate={{ opacity: 1, y: 0 }} className="flex flex-wrap items-center gap-3 border border-line p-3">
+                    <Music className="h-4 w-4 shrink-0 text-safety" />
+                    <audio controls src={m.url} className="h-9 min-w-0 flex-1" />
+                    <span className="hash text-mute">{m.seconds ? mmss(m.seconds) : ""} · {m.att ? m.att.sha256.slice(0, 10) : "stored on device"}</span>
+                    <button onClick={() => setMedia((x) => x.filter((y) => y.key !== m.key))} aria-label="Remove recording" className="text-mute hover:text-bad"><X className="h-4 w-4" /></button>
                   </motion.div>
                 ))}
               </div>
@@ -444,7 +577,7 @@ export function Composer({ project, today, serverEngine }: Props) {
           <div className="mt-5 flex items-center justify-between gap-3">
             <span className="text-[12.5px] text-mute">{words} words</span>
             <Button variant="safety" size="lg" onClick={seal} disabled={!ready}>
-              {sealing ? <Loader2 className="h-4 w-4 animate-spin" /> : <Link2 className="h-4 w-4" />} Seal entry
+              {sealing ? <Loader2 className="h-4 w-4 animate-spin" /> : online ? <Link2 className="h-4 w-4" /> : <HardDriveDownload className="h-4 w-4" />} {online ? "Seal entry" : "Save for sync"}
             </Button>
           </div>
         </div>
@@ -454,6 +587,21 @@ export function Composer({ project, today, serverEngine }: Props) {
       <PreviewPanel preview={preview} loading={loading} rules={project.rules} logDate={date} onGap={answer} tooShort={text.trim().length < 20} onGuide={toggleInterview} guiding={interview} />
 
       <FlowBar state={flow} />
+
+      {/* ---------- saved offline ---------- */}
+      <AnimatePresence>
+        {queued && (
+          <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="fixed inset-0 z-[100] grid place-items-center bg-night/92 p-6 backdrop-blur-md">
+            <div className="drawing absolute inset-0 opacity-60" />
+            <motion.div initial={{ scale: 0.9, y: 20 }} animate={{ scale: 1, y: 0 }} transition={{ type: "spring", stiffness: 220, damping: 20 }} className="relative w-full max-w-lg text-center text-white">
+              <div className="mx-auto grid h-20 w-20 place-items-center rounded-full bg-warn text-black"><HardDriveDownload className="h-9 w-9" /></div>
+              <h2 className="cond mt-6 text-[60px]">Saved on this device</h2>
+              <p className="mx-auto mt-3 max-w-sm text-white/65">No signal, no problem. {queued.words} words{queued.files ? ` and ${queued.files} file${queued.files === 1 ? "" : "s"}` : ""} are stored safely and will seal automatically the moment you’re back online. The capture time is recorded with the entry.</p>
+              <button onClick={() => router.push(`/app/projects/${project.id}`)} className="mt-7 border border-white/30 px-6 py-3 font-mono text-[12px] uppercase tracking-[0.05em] hover:border-white">Back to logbook</button>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
 
       {/* ---------- seal ceremony ---------- */}
       <AnimatePresence>

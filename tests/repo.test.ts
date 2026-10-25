@@ -17,7 +17,7 @@ describe("sealing, verification and tamper detection (real SQLite)", () => {
     svc = await import("@/lib/services");
     const { RULE_PRESETS } = await import("@/lib/domain/types");
     projectId = repo.insertProject({
-      name: "Test", address: "", client: "C", contractor: "K", contractRef: "", lat: null, lon: null, rules: RULE_PRESETS.tight7.rules,
+      name: "Test", address: "", client: "C", contractor: "K", contractRef: "", ownerName: "", ownerEmail: "", lat: null, lon: null, rules: RULE_PRESETS.tight7.rules,
     }).id;
   });
   afterAll(() => fs.rmSync(dir, { recursive: true, force: true }));

@@ -1,7 +1,8 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
-import { AlertTriangle, CloudCheck, CloudAlert, Clock3, Camera, Link2 } from "lucide-react";
+import { AlertTriangle, CloudCheck, CloudAlert, Clock3, Camera, Link2, Mic } from "lucide-react";
 import * as repo from "@/lib/db/repo";
+import { pageProject } from "@/lib/auth/guards";
 import { evaluateLog } from "@/lib/domain/events";
 import { addDays, diffDays, formatDate, todayLocal, toUtc } from "@/lib/domain/dates";
 import { scoreLabel } from "@/lib/domain/evidence";
@@ -32,8 +33,7 @@ function missingWorkdays(dates: string[], today: string): string[] {
 
 export default async function Logbook({ params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
-  const project = repo.getProject(id);
-  if (!project) notFound();
+  await pageProject(id);
   const logs = repo.listLogs(id).reverse();
   const today = todayLocal();
   const missing = missingWorkdays(logs.map((l) => l.content.logDate), today);
@@ -60,7 +60,7 @@ export default async function Logbook({ params }: { params: Promise<{ id: string
       {logs.map((l) => {
         const ev = evaluateLog(l);
         const c = l.content;
-        const late = todayLocal(new Date(l.createdAt)) > c.logDate;
+        const late = todayLocal(new Date(c.capturedAt ?? l.createdAt)) > c.logDate;
         const s = scoreLabel(l.score);
         const verdicts = ev.weatherVerdicts;
         return (
@@ -73,8 +73,10 @@ export default async function Logbook({ params }: { params: Promise<{ id: string
             <div className="min-w-0 flex-1">
               <div className="flex flex-wrap items-center gap-2 text-[13px] text-mute">
                 <span>{c.author}</span>
-                {late && <Pill className="bg-warn-soft text-warn"><Clock3 className="h-3 w-3" /> logged {formatDate(todayLocal(new Date(l.createdAt)), { month: "short", day: "numeric" })}</Pill>}
-                {c.attachments.length > 0 && <Pill className="bg-paper-2 text-ink-2"><Camera className="h-3 w-3" /> {c.attachments.length}</Pill>}
+                {late && <Pill className="bg-warn-soft text-warn"><Clock3 className="h-3 w-3" /> logged {formatDate(todayLocal(new Date(c.capturedAt ?? l.createdAt)), { month: "short", day: "numeric" })}</Pill>}
+                {c.capturedAt && <Pill className="bg-warn-soft text-warn">captured offline</Pill>}
+                {c.attachments.some((a) => a.mime.startsWith("image/")) && <Pill className="bg-paper-2 text-ink-2"><Camera className="h-3 w-3" /> {c.attachments.filter((a) => a.mime.startsWith("image/")).length}</Pill>}
+                {c.attachments.some((a) => a.mime.startsWith("audio/")) && <Pill className="bg-paper-2 text-ink-2"><Mic className="h-3 w-3" /> audio sealed</Pill>}
               </div>
               <p className="mt-2 max-w-[62ch] text-[16px] leading-relaxed text-ink">{c.structured.summary}</p>
               {c.structured.events.length > 0 && (

@@ -1,6 +1,7 @@
 import "server-only";
 import { NextResponse } from "next/server";
 import { ZodError } from "zod";
+import { HttpError } from "@/lib/http-error";
 
 export const json = (data: unknown, init?: number | ResponseInit) =>
   NextResponse.json(data, typeof init === "number" ? { status: init } : init);
@@ -9,6 +10,7 @@ export const fail = (message: string, status = 400, extra?: Record<string, unkno
   NextResponse.json({ error: message, ...extra }, { status });
 
 export function handle(err: unknown) {
+  if (err instanceof HttpError) return fail(err.message, err.status);
   if (err instanceof ZodError) {
     return fail(err.issues[0]?.message ?? "Invalid request", 422, { issues: err.issues.map((i) => ({ path: i.path, message: i.message })) });
   }

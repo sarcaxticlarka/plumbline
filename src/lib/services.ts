@@ -11,6 +11,7 @@ import { todayLocal } from "@/lib/domain/dates";
 import type { Extraction } from "@/lib/domain/schema";
 import type { Attachment, ChainResult, EventRecord, LogEntry, Project, SealedContent, WeatherEvidence, WeatherVerdict } from "@/lib/domain/types";
 import * as repo from "@/lib/db/repo";
+import { projectIdsFor } from "@/lib/db/repo-auth";
 import { ensureSeed } from "@/lib/db/seed";
 
 /* ---------- weather memo (the composer previews on every pause in speech) ---------- */
@@ -24,6 +25,13 @@ async function siteWeather(project: Project | null, date: string): Promise<Weath
   const value = await fetchSiteWeather(project.lat, project.lon, date);
   wxMemo.set(key, { at: Date.now(), value });
   return value;
+}
+
+/** A device clock is untrusted: accept it only if plausible (not in the future, not older than 30 days). */
+export function saneCapturedAt(v: string | undefined, now = Date.now()): boolean {
+  if (!v) return false;
+  const t = Date.parse(v);
+  return Number.isFinite(t) && t <= now + 5 * 60_000 && t >= now - 30 * 864e5;
 }
 
 /* ---------- live preview (nothing is stored) ---------- */
@@ -63,6 +71,9 @@ export interface SealInput {
   source: "voice" | "text";
   attachments: Attachment[];
   addendumOf: string | null;
+  authorId?: string;
+  capturedAt?: string;
+  clientId?: string;
 }
 
 export async function sealLog(
@@ -97,6 +108,9 @@ export async function sealLog(
     weather,
     provider,
     addendumOf: input.addendumOf,
+    ...(input.authorId ? { authorId: input.authorId } : {}),
+    ...(input.clientId ? { clientId: input.clientId } : {}),
+    ...(saneCapturedAt(input.capturedAt) ? { capturedAt: input.capturedAt } : {}),
   };
 
   const createdAt = opts.createdAt ?? new Date().toISOString();
@@ -162,10 +176,12 @@ export function overview(projectId: string, today = todayLocal()): ProjectOvervi
   };
 }
 
-export async function portfolio(today = todayLocal()): Promise<ProjectOverview[]> {
+export async function portfolio(today = todayLocal(), userId?: string): Promise<ProjectOverview[]> {
   await ensureSeed();
+  const allowed = userId ? new Set(projectIdsFor(userId).map((m) => m.projectId)) : null;
   return repo
     .listProjects()
+    .filter((p) => !allowed || allowed.has(p.id))
     .map((p) => overview(p.id, today)!)
     .sort((a, b) => b.overdueNotices - a.overdueNotices || b.urgentNotices - a.urgentNotices);
 }

@@ -3,6 +3,7 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { LayoutGrid, Plus, Settings, ShieldAlert, ShieldCheck } from "lucide-react";
 import { EngineChip } from "./EngineChip";
+import { UserMenu } from "./UserMenu";
 import { Logo } from "@/components/ui";
 import { cn } from "@/lib/format";
 
@@ -13,7 +14,7 @@ export interface NavProject {
   urgent: number;
 }
 
-export function SideNav({ projects, engine }: { projects: NavProject[]; engine: { label: string; live: boolean } }) {
+export function SideNav({ projects, engine, user }: { projects: NavProject[]; engine: { label: string; live: boolean }; user: { name: string; email: string } }) {
   const path = usePathname();
   const item = (active: boolean) =>
     cn(
@@ -56,6 +57,7 @@ export function SideNav({ projects, engine }: { projects: NavProject[]; engine: 
         <Settings className="h-4 w-4" /> Settings &amp; keys
       </Link>
       <EngineChip server={engine} />
+      <UserMenu name={user.name} email={user.email} />
     </aside>
   );
 }

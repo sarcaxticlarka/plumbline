@@ -1,7 +1,8 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
-import { ArrowLeft, ArrowRight, Camera, Check, CloudCheck, CloudAlert, Cloud, Cpu, Link2, ShieldCheck, X } from "lucide-react";
+import { ArrowLeft, ArrowRight, Camera, Mic, CloudOff, Check, CloudCheck, CloudAlert, Cloud, Cpu, Link2, ShieldCheck, X } from "lucide-react";
 import * as repo from "@/lib/db/repo";
+import { pageProject } from "@/lib/auth/guards";
 import { computeHash } from "@/lib/domain/chain";
 import { evaluateLog } from "@/lib/domain/events";
 import { formatDate, todayLocal } from "@/lib/domain/dates";
@@ -35,6 +36,7 @@ function highlight(text: string, quotes: string[]) {
 
 export default async function LogDetail({ params }: { params: Promise<{ id: string; logId: string }> }) {
   const { id, logId } = await params;
+  await pageProject(id);
   const log = repo.getLog(logId);
   if (!log || log.projectId !== id) notFound();
   const logs = repo.listLogs(id);
@@ -46,7 +48,7 @@ export default async function LogDetail({ params }: { params: Promise<{ id: stri
   const lab = scoreLabel(log.score);
   const recomputed = computeHash({ seq: log.seq, projectId: log.projectId, createdAt: log.createdAt, prevHash: log.prevHash, content: c });
   const intact = recomputed === log.hash;
-  const late = todayLocal(new Date(log.createdAt)) > c.logDate;
+  const late = todayLocal(new Date(c.capturedAt ?? log.createdAt)) > c.logDate;
 
   return (
     <div className="space-y-6">
@@ -65,7 +67,8 @@ export default async function LogDetail({ params }: { params: Promise<{ id: stri
           <h2 className="serif mt-1 text-[clamp(32px,4vw,48px)] leading-none">{formatDate(c.logDate, { weekday: "long", month: "long", day: "numeric", year: "numeric" })}</h2>
           <div className="mt-3 flex flex-wrap gap-2">
             <Pill className={lab.tone === "good" ? "bg-ok-soft text-ok" : lab.tone === "ok" ? "bg-warn-soft text-warn" : "bg-bad-soft text-bad"}>{lab.label} evidence</Pill>
-            <Pill className={late ? "bg-warn-soft text-warn" : "bg-ok-soft text-ok"}>{late ? `Logged ${formatDate(todayLocal(new Date(log.createdAt)), { month: "short", day: "numeric" })} — not same-day` : "Logged the same day"}</Pill>
+            <Pill className={late ? "bg-warn-soft text-warn" : "bg-ok-soft text-ok"}>{late ? `Logged ${formatDate(todayLocal(new Date(c.capturedAt ?? log.createdAt)), { month: "short", day: "numeric" })} — not same-day` : "Logged the same day"}</Pill>
+            {c.capturedAt && <Pill className="bg-warn-soft text-warn"><CloudOff className="h-3 w-3" /> Captured offline {new Date(c.capturedAt).toLocaleString()} · sealed {new Date(log.createdAt).toLocaleString()} (device clock)</Pill>}
             <Pill className="bg-paper-2 text-ink-2">{c.source === "voice" ? "Dictated" : "Typed / dictated into text"}</Pill>
             <Pill className="bg-paper-2 text-ink-2"><Cpu className="h-3 w-3" />{providerLabel(c.provider)}</Pill>
           </div>
@@ -154,12 +157,28 @@ export default async function LogDetail({ params }: { params: Promise<{ id: stri
             </section>
           )}
 
-          {c.attachments.length > 0 && (
+          {c.attachments.some((a) => a.mime.startsWith("audio/")) && (
             <section className="surface p-6">
-              <div className="label mb-3 flex items-center gap-1.5"><Camera className="h-3 w-3" /> Photos · {c.attachments.length}</div>
+              <div className="label mb-3 flex items-center gap-1.5"><Mic className="h-3 w-3" /> Original audio · sealed</div>
+              <div className="space-y-4">
+                {c.attachments.filter((a) => a.mime.startsWith("audio/")).map((a) => (
+                  <div key={a.sha256}>
+                    {/* eslint-disable-next-line jsx-a11y/media-has-caption */}
+                    <audio controls preload="none" src={`/api/uploads/${a.sha256}`} className="w-full" />
+                    <div className="hash mt-2 flex items-center gap-2 break-all text-mute">SHA-256 {a.sha256}<CopyButton value={a.sha256} /></div>
+                  </div>
+                ))}
+              </div>
+              <p className="mt-3 text-[12px] text-mute">The recording’s hash is part of this entry’s seal: swapping or trimming the audio breaks the chain.</p>
+            </section>
+          )}
+
+          {c.attachments.some((a) => a.mime.startsWith("image/")) && (
+            <section className="surface p-6">
+              <div className="label mb-3 flex items-center gap-1.5"><Camera className="h-3 w-3" /> Photos · {c.attachments.filter((a) => a.mime.startsWith("image/")).length}</div>
               <div className="grid grid-cols-3 gap-2">
-                {c.attachments.map((a) => (
-                  <a key={a.sha256} href={`/api/uploads/${a.sha256}`} target="_blank" rel="noreferrer" className="group relative aspect-square overflow-hidden rounded-xl border border-line">
+                {c.attachments.filter((a) => a.mime.startsWith("image/")).map((a) => (
+                  <a key={a.sha256} href={`/api/uploads/${a.sha256}`} target="_blank" rel="noreferrer" className="group relative aspect-square overflow-hidden border border-line">
                     {/* eslint-disable-next-line @next/next/no-img-element */}
                     <img src={`/api/uploads/${a.sha256}`} alt={a.name} className="h-full w-full object-cover transition-transform group-hover:scale-105" />
                     <span className="hash absolute inset-x-0 bottom-0 bg-black/75 text-center text-[9px] text-white">{a.sha256.slice(0, 10)}</span>

@@ -20,6 +20,8 @@ const toProject = (r: Row): Project => ({
   client: r.client as string,
   contractor: r.contractor as string,
   contractRef: r.contract_ref as string,
+  ownerName: (r.owner_name as string) ?? "",
+  ownerEmail: (r.owner_email as string) ?? "",
   lat: (r.lat as number | null) ?? null,
   lon: (r.lon as number | null) ?? null,
   rules: JSON.parse(r.rules_json as string) as NoticeRules,
@@ -53,9 +55,9 @@ export function insertProject(p: Omit<Project, "id" | "createdAt"> & { id?: stri
   const createdAt = p.createdAt ?? new Date().toISOString();
   db()
     .prepare(
-      "INSERT INTO projects (id,name,address,client,contractor,contract_ref,lat,lon,rules_json,created_at) VALUES (?,?,?,?,?,?,?,?,?,?)",
+      "INSERT INTO projects (id,name,address,client,contractor,contract_ref,owner_name,owner_email,lat,lon,rules_json,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
     )
-    .run(id, p.name, p.address, p.client, p.contractor, p.contractRef, p.lat, p.lon, JSON.stringify(p.rules), createdAt);
+    .run(id, p.name, p.address, p.client, p.contractor, p.contractRef, p.ownerName ?? "", p.ownerEmail ?? "", p.lat, p.lon, JSON.stringify(p.rules), createdAt);
   return getProject(id)!;
 }
 
@@ -72,8 +74,19 @@ export function getLog(id: string): LogEntry | null {
   return r ? toLog(r) : null;
 }
 
+export function findLogByClientId(projectId: string, clientId: string): LogEntry | null {
+  const r = db().prepare("SELECT * FROM log_entries WHERE project_id = ? AND json_extract(content_json, '$.clientId') = ?").get(projectId, clientId) as Row | undefined;
+  return r ? toLog(r) : null;
+}
+
 export function insertLog(args: { projectId: string; createdAt: string; content: SealedContent; score: number }): LogEntry {
   return tx(() => {
+    // Atomic idempotency: a retried offline submission (same clientId) returns the entry that already exists,
+    // even when two syncs race each other (extraction above is async; this block is not).
+    if (args.content.clientId) {
+      const dupe = findLogByClientId(args.projectId, args.content.clientId);
+      if (dupe) return dupe;
+    }
     const last = db()
       .prepare("SELECT seq, hash FROM log_entries WHERE project_id = ? ORDER BY seq DESC LIMIT 1")
       .get(args.projectId) as { seq: number; hash: string } | undefined;
@@ -165,5 +178,125 @@ export function tamperWithLog(projectId: string): { seq: number; field: string }
 
 export function wipeAll() {
   const conn = db();
-  conn.exec("DELETE FROM notices; DELETE FROM log_entries; DELETE FROM projects; DELETE FROM uploads;");
+  conn.exec("DELETE FROM notices; DELETE FROM anchors; DELETE FROM emails; DELETE FROM invites; DELETE FROM memberships; DELETE FROM log_entries; DELETE FROM projects; DELETE FROM uploads;");
+}
+
+/**
+ * The attack a plain hash chain can't catch alone: edit an entry, then recompute every later hash so the chain
+ * still verifies. Only an external anchor (timestamp / emailed head) exposes it.
+ */
+export function rewriteHistory(projectId: string): { seq: number } | null {
+  const logs = listLogs(projectId);
+  const target = logs.find((l) => l.content.structured.events.some((e) => e.hoursLost !== null));
+  if (!target) return null;
+  return tx(() => {
+    let prev = target.seq === 1 ? GENESIS : logs.find((l) => l.seq === target.seq - 1)!.hash;
+    for (const l of logs.filter((x) => x.seq >= target.seq)) {
+      const content = structuredClone(l.content);
+      if (l.id === target.id) {
+        const ev = content.structured.events.find((e) => e.hoursLost !== null)!;
+        ev.hoursLost = Math.max(0.5, (ev.hoursLost ?? 4) - 3);
+      }
+      const hash = computeHash({ seq: l.seq, projectId, createdAt: l.createdAt, prevHash: prev, content });
+      db().prepare("UPDATE log_entries SET content_json = ?, prev_hash = ?, hash = ? WHERE id = ?").run(JSON.stringify(content), prev, hash, l.id);
+      prev = hash;
+    }
+    return { seq: target.seq };
+  });
+}
+
+/* ---------- anchors & emails ---------- */
+
+export interface AnchorRow {
+  id: string;
+  projectId: string;
+  headSeq: number;
+  headHash: string;
+  kind: "rfc3161" | "email";
+  status: string;
+  detail: Record<string, unknown>;
+  createdAt: string;
+}
+const toAnchor = (r: Row): AnchorRow => ({
+  id: r.id as string,
+  projectId: r.project_id as string,
+  headSeq: r.head_seq as number,
+  headHash: r.head_hash as string,
+  kind: r.kind as AnchorRow["kind"],
+  status: r.status as string,
+  detail: JSON.parse((r.detail_json as string) || "{}"),
+  createdAt: r.created_at as string,
+});
+
+export function insertAnchor(a: Omit<AnchorRow, "id" | "createdAt"> & { createdAt?: string }): AnchorRow {
+  const id = randomUUID().slice(0, 8);
+  db()
+    .prepare("INSERT INTO anchors (id,project_id,head_seq,head_hash,kind,status,detail_json,created_at) VALUES (?,?,?,?,?,?,?,?)")
+    .run(id, a.projectId, a.headSeq, a.headHash, a.kind, a.status, JSON.stringify(a.detail), a.createdAt ?? new Date().toISOString());
+  return toAnchor(db().prepare("SELECT * FROM anchors WHERE id = ?").get(id) as Row);
+}
+export function listAnchors(projectId: string): AnchorRow[] {
+  return (db().prepare("SELECT * FROM anchors WHERE project_id = ? ORDER BY head_seq DESC, created_at DESC").all(projectId) as Row[]).map(toAnchor);
+}
+export function getAnchor(id: string): AnchorRow | null {
+  const r = db().prepare("SELECT * FROM anchors WHERE id = ?").get(id) as Row | undefined;
+  return r ? toAnchor(r) : null;
+}
+
+export type EmailStatus = "sent" | "delivered" | "bounced" | "failed" | "preview";
+export interface EmailRow {
+  id: string;
+  projectId: string;
+  eventId: string | null;
+  kind: "notice" | "anchor";
+  to: string[];
+  subject: string;
+  body: string;
+  bodySha256: string;
+  status: EmailStatus;
+  provider: string;
+  messageId: string | null;
+  response: string | null;
+  sentBy: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+const toEmail = (r: Row): EmailRow => ({
+  id: r.id as string,
+  projectId: r.project_id as string,
+  eventId: (r.event_id as string | null) ?? null,
+  kind: r.kind as EmailRow["kind"],
+  to: JSON.parse(r.to_json as string),
+  subject: r.subject as string,
+  body: r.body as string,
+  bodySha256: r.body_sha256 as string,
+  status: r.status as EmailStatus,
+  provider: r.provider as string,
+  messageId: (r.message_id as string | null) ?? null,
+  response: (r.response as string | null) ?? null,
+  sentBy: (r.sent_by as string | null) ?? null,
+  createdAt: r.created_at as string,
+  updatedAt: r.updated_at as string,
+});
+
+export function insertEmail(e: Omit<EmailRow, "id" | "createdAt" | "updatedAt" | "bodySha256">): EmailRow {
+  const id = randomUUID().slice(0, 8);
+  const now = new Date().toISOString();
+  db()
+    .prepare("INSERT INTO emails (id,project_id,event_id,kind,to_json,subject,body,body_sha256,status,provider,message_id,response,sent_by,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)")
+    .run(id, e.projectId, e.eventId, e.kind, JSON.stringify(e.to), e.subject, e.body, sha256(e.body), e.status, e.provider, e.messageId, e.response, e.sentBy, now, now);
+  return toEmail(db().prepare("SELECT * FROM emails WHERE id = ?").get(id) as Row);
+}
+export function listEmails(projectId: string): EmailRow[] {
+  return (db().prepare("SELECT * FROM emails WHERE project_id = ? ORDER BY created_at DESC").all(projectId) as Row[]).map(toEmail);
+}
+export function getEmail(id: string): EmailRow | null {
+  const r = db().prepare("SELECT * FROM emails WHERE id = ?").get(id) as Row | undefined;
+  return r ? toEmail(r) : null;
+}
+export function setEmailStatusByMessageId(messageId: string, status: EmailStatus, response?: string): boolean {
+  const res = db()
+    .prepare("UPDATE emails SET status = ?, response = COALESCE(?, response), updated_at = ? WHERE message_id = ?")
+    .run(status, response ?? null, new Date().toISOString(), messageId);
+  return Number(res.changes) > 0;
 }

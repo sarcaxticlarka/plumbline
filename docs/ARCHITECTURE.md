@@ -91,3 +91,30 @@ Also out of scope for v0.1: authentication, per-tenant isolation, audit logging 
 - **Never stored:** keys are not persisted, logged or echoed; `/api/ai/test` returns only latency, model and counts.
 - **SSRF:** `safe-url.ts` rejects non-https, credentials-in-URL and private/loopback/link-local/metadata addresses in production (set `PLUMBLINE_ALLOW_PRIVATE_URLS=1` when self-hosting a local model). Known limit: DNS is resolved at check time, so a rebinding attack between check and fetch isn't fully closed; redirects are refused.
 - **Trade-off:** the key transits the server. A browser-direct mode would keep it off our infrastructure but conflicts with server-side re-extraction at seal time; self-hosting is the recommended path for sensitive projects.
+
+## Accounts, roles and access control
+
+- `lib/auth/permissions.ts` is a pure action→role matrix shared by the server guards and the UI (which hides what a role can't do).
+- Sessions: a random 256-bit token in an `httpOnly`, `SameSite=Lax` cookie (`Secure` in production); only its SHA-256 is stored. Passwords use **scrypt** (Node core) with a per-user salt; login burns equal time for unknown emails and is rate-limited.
+- Every route handler goes through `apiUser` / `apiProject(req, projectId, action)`: 401 signed-out, **404 for non-members** (existence isn't leaked), 403 when the role lacks the action. Mutating requests also check that `Origin` matches the host (CSRF defence in depth). Pages use `pageUser` / `pageProject`.
+- Invites for people who haven't signed up yet are stored by email and become memberships on sign-up/sign-in.
+
+## External anchoring
+
+`anchorProject()` refuses to anchor a record that already fails verification, then (a) asks a public TSA for an **RFC 3161** timestamp of `SHA-256("plumbline-chain-head:v1:<project>:<seq>:<hash>")` (hand-rolled DER in `anchor/der.ts`, verified against freeTSA and OpenSSL) and (b) emails the fingerprint to the owner's rep. `integrity()` re-checks every anchor against the live chain, so an attacker who edits an entry *and recomputes every later hash* still fails: the timestamped/emailed hash for that sequence number no longer matches. Emails that were never delivered (no provider) are explicitly **not** counted as anchors. `/api/cron/anchor` anchors every project on a schedule.
+
+## Original audio
+
+`useRecorder` runs `MediaRecorder` next to speech recognition (and independently, so it also works while dictating with Wispr Flow). The file is uploaded content-addressed by SHA-256, listed in the entry's `attachments`, and therefore inside the hash seal. `/api/uploads/[sha]` requires sign-in and supports HTTP Range.
+
+## Email notices
+
+`lib/email` has three modes: SMTP (nodemailer), Resend (HTTP), or **preview** — recorded, not delivered, notice **not** marked sent. Each send stores a receipt (provider, message-id, server reply, body SHA-256). Resend webhooks (`/api/webhooks/email?token=…`) upgrade a receipt to *delivered* or *bounced*.
+
+## Offline mode
+
+- `public/sw.js` — cache-first for static assets, network-first with cached fallback for `/app/*` pages, never caches `/api/*`; on sign-out the page tells the worker to forget cached authenticated pages.
+- `lib/offline/outbox.ts` — IndexedDB outbox (entry JSON + photo/audio Blobs). `SyncBanner` flushes automatically on reconnect and on a timer.
+- **Exactly-once:** each entry carries a client-generated `clientId`; `insertLog` checks it inside the same SQLite transaction that inserts, so two racing syncs (e.g. two tabs, or an old page and a reloaded one) produce one sealed entry. Found by the real-Chrome e2e test, fixed and unit-tested.
+- Offline preview runs the same pure rules engine and evidence scorer in the browser; weather resumes on reconnect.
+- `capturedAt` (device clock, sanity-checked: not future, not >30 days old) is stored in the seal and used for the "same-day" evidence check, and is displayed as device-reported.

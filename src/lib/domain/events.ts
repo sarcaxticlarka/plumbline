@@ -17,9 +17,9 @@ export function evaluateLog(log: Pick<LogEntry, "content" | "createdAt">): LogEv
   const c = log.content;
   const judgements = c.structured.events.map((e) => judgeWeatherEvent(e, c.weather));
   const evidence = evaluateEntry(c.structured, c.transcript, {
-    photos: c.attachments.length,
+    photos: c.attachments.filter((a) => a.mime.startsWith("image/")).length,
     logDate: c.logDate,
-    recordedOn: todayLocal(new Date(log.createdAt)),
+    recordedOn: todayLocal(new Date(c.capturedAt ?? log.createdAt)),
     weatherVerdicts: judgements.map((j) => j.verdict),
   });
   return { evidence, weatherVerdicts: judgements.map((j) => j.verdict), weatherNotes: judgements.map((j) => j.explanation) };

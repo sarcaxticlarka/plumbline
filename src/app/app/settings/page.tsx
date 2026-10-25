@@ -1,11 +1,14 @@
 import { ExternalLink, Mic } from "lucide-react";
 import { getServerEngine } from "@/lib/engine";
+import { pageUser } from "@/lib/auth/guards";
 import { AiSettings } from "@/components/app/AiSettings";
 import { LinkButton } from "@/components/ui";
+import { InstallButton } from "@/components/app/PwaRegister";
 
 export const metadata = { title: "Settings & keys" };
 
-export default function Settings() {
+export default async function Settings() {
+  await pageUser();
   const server = getServerEngine();
   return (
     <div>
@@ -20,6 +23,16 @@ export default function Settings() {
             Currently the server default is <b className="text-ink">{server.label}</b>.
           </p>
           <div className="surface mt-6"><AiSettings /></div>
+        </section>
+
+        <section className="lg:col-span-2">
+          <div className="border-b border-ink pb-3"><h2 className="cond text-[40px]">On the job site</h2></div>
+          <div className="mt-4 grid gap-6 md:grid-cols-[1.2fr_1fr]">
+            <p className="max-w-[62ch] text-[14.5px] leading-relaxed text-ink-2">
+              Install Plumbline on your phone and it works with no signal. Open <b className="text-ink">Dictate today’s log</b> once while you have a connection — after that the composer opens offline, previews with the built-in engine, and an entry you seal is stored on the device (photos and audio included) and sealed automatically when you’re back online. The time you dictated it is kept with the entry as device-reported.
+            </p>
+            <div><InstallButton /></div>
+          </div>
         </section>
 
         <section>

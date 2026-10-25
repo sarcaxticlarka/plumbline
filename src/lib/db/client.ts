@@ -49,6 +49,68 @@ const MIGRATIONS: string[] = [
     created_at TEXT NOT NULL
   );
   `,
+  /* 2: accounts & teams, chain anchors, email outbox/receipts */ `
+  ALTER TABLE projects ADD COLUMN owner_email TEXT NOT NULL DEFAULT '';
+  ALTER TABLE projects ADD COLUMN owner_name TEXT NOT NULL DEFAULT '';
+  CREATE TABLE users (
+    id TEXT PRIMARY KEY,
+    email TEXT NOT NULL UNIQUE,
+    name TEXT NOT NULL,
+    password_hash TEXT NOT NULL,
+    created_at TEXT NOT NULL
+  );
+  CREATE TABLE sessions (
+    token_hash TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    created_at TEXT NOT NULL,
+    expires_at TEXT NOT NULL
+  );
+  CREATE TABLE memberships (
+    project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    role TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    PRIMARY KEY (project_id, user_id)
+  );
+  CREATE TABLE invites (
+    id TEXT PRIMARY KEY,
+    project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    email TEXT NOT NULL,
+    role TEXT NOT NULL,
+    invited_by TEXT,
+    created_at TEXT NOT NULL,
+    UNIQUE (project_id, email)
+  );
+  CREATE TABLE anchors (
+    id TEXT PRIMARY KEY,
+    project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    head_seq INTEGER NOT NULL,
+    head_hash TEXT NOT NULL,
+    kind TEXT NOT NULL,
+    status TEXT NOT NULL,
+    detail_json TEXT NOT NULL DEFAULT '{}',
+    created_at TEXT NOT NULL
+  );
+  CREATE INDEX idx_anchors_project ON anchors(project_id, head_seq);
+  CREATE TABLE emails (
+    id TEXT PRIMARY KEY,
+    project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    event_id TEXT,
+    kind TEXT NOT NULL,
+    to_json TEXT NOT NULL,
+    subject TEXT NOT NULL,
+    body TEXT NOT NULL,
+    body_sha256 TEXT NOT NULL,
+    status TEXT NOT NULL,
+    provider TEXT NOT NULL,
+    message_id TEXT,
+    response TEXT,
+    sent_by TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+  );
+  CREATE INDEX idx_emails_project ON emails(project_id, created_at);
+  `,
 ];
 
 export const dbPath = () => process.env.PLUMBLINE_DB || path.join(process.cwd(), "data", "plumbline.db");
