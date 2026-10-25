@@ -2,7 +2,7 @@ import "server-only";
 import { randomUUID } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
-import { db, tx } from "./client";
+import { db, dbPath, tx } from "./client";
 import { GENESIS, computeHash, sha256, verifyChain } from "@/lib/domain/chain";
 import { buildEventRecords, type NoticeRow } from "@/lib/domain/events";
 import type {
@@ -141,7 +141,7 @@ export function getEvent(eventId: string): { event: EventRecord; log: LogEntry; 
 
 /* ---------- uploads ---------- */
 
-export const uploadDir = () => path.join(path.dirname(process.env.PLUMBLINE_DB || path.join(process.cwd(), "data", "x")), "uploads");
+export const uploadDir = () => path.join(path.dirname(dbPath()), "uploads");
 
 export function saveUpload(buf: Buffer, name: string, mime: string): Attachment {
   const digest = sha256(buf);

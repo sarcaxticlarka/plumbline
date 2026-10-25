@@ -113,7 +113,15 @@ const MIGRATIONS: string[] = [
   `,
 ];
 
-export const dbPath = () => process.env.PLUMBLINE_DB || path.join(process.cwd(), "data", "plumbline.db");
+/**
+ * Where the SQLite file lives. On Vercel (and other read-only serverless filesystems) only /tmp is writable, so there
+ * the file is forced under /tmp whatever PLUMBLINE_DB says. /tmp is ephemeral: fine for a demo, not for real data.
+ */
+export const dbPath = () => {
+  const configured = process.env.PLUMBLINE_DB || path.join(process.cwd(), "data", "plumbline.db");
+  if ((process.env.VERCEL || process.env.AWS_LAMBDA_FUNCTION_NAME) && !path.resolve(configured).startsWith("/tmp/")) return "/tmp/plumbline.db";
+  return configured;
+};
 
 type G = typeof globalThis & { __plumblineDb?: DatabaseSync };
 
