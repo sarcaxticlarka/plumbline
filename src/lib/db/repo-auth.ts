@@ -13,8 +13,7 @@ const toUser = (r: Row): User => ({ id: r.id as string, email: r.email as string
 export const sha = (s: string) => createHash("sha256").update(s).digest("hex");
 
 /* ---------- users ---------- */
-export function createUser(email: string, name: string, passwordHash: string): User {
-  const id = randomUUID().slice(0, 8);
+export function createUser(email: string, name: string, passwordHash: string, id: string = randomUUID().slice(0, 8)): User {
   db().prepare("INSERT INTO users (id,email,name,password_hash,created_at) VALUES (?,?,?,?,?)").run(id, email.toLowerCase(), name, passwordHash, new Date().toISOString());
   return { id, email: email.toLowerCase(), name };
 }

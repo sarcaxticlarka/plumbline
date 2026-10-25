@@ -1,7 +1,8 @@
 import { redirect } from "next/navigation";
 import { sessionUser } from "@/lib/auth/session";
 import { demoEnabled } from "@/lib/api";
-import { DEMO_USERS, ensureSeed } from "@/lib/db/seed";
+import { DEMO_USERS } from "@/lib/auth/demo";
+import { ensureSeed } from "@/lib/db/seed";
 import { LoginForm } from "@/components/app/LoginForm";
 import { Logo } from "@/components/ui";
 

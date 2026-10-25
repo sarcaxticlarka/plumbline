@@ -79,7 +79,7 @@ export interface SealInput {
 export async function sealLog(
   projectId: string,
   input: SealInput,
-  opts: { createdAt?: string; forceLocal?: boolean; weather?: WeatherEvidence | null; cfg?: AiConfig | null } = {},
+  opts: { createdAt?: string; forceLocal?: boolean; weather?: WeatherEvidence | null; cfg?: AiConfig | null; id?: string } = {},
 ): Promise<{ entry: LogEntry; evaluation: LogEvaluation; note?: string }> {
   const project = repo.getProject(projectId);
   if (!project) throw new Error("Project not found");
@@ -115,7 +115,7 @@ export async function sealLog(
 
   const createdAt = opts.createdAt ?? new Date().toISOString();
   const evaluation = evaluateLog({ content, createdAt });
-  const entry = repo.insertLog({ projectId, createdAt, content, score: evaluation.evidence.score });
+  const entry = repo.insertLog({ id: opts.id, projectId, createdAt, content, score: evaluation.evidence.score });
   return { entry, evaluation, note };
 }
 

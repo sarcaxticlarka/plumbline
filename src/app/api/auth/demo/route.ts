@@ -2,7 +2,8 @@ import { z } from "zod";
 import { startSession } from "@/lib/auth/session";
 import { assertSameOrigin } from "@/lib/auth/guards";
 import { getUserByEmail } from "@/lib/db/repo-auth";
-import { DEMO_USERS, ensureSeed } from "@/lib/db/seed";
+import { DEMO_USERS } from "@/lib/auth/demo";
+import { ensureSeed } from "@/lib/db/seed";
 import { demoEnabled, fail, handle, json } from "@/lib/api";
 
 export const dynamic = "force-dynamic";

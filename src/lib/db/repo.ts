@@ -79,7 +79,7 @@ export function findLogByClientId(projectId: string, clientId: string): LogEntry
   return r ? toLog(r) : null;
 }
 
-export function insertLog(args: { projectId: string; createdAt: string; content: SealedContent; score: number }): LogEntry {
+export function insertLog(args: { id?: string; projectId: string; createdAt: string; content: SealedContent; score: number }): LogEntry {
   return tx(() => {
     // Atomic idempotency: a retried offline submission (same clientId) returns the entry that already exists,
     // even when two syncs race each other (extraction above is async; this block is not).
@@ -93,7 +93,7 @@ export function insertLog(args: { projectId: string; createdAt: string; content:
     const seq = (last?.seq ?? 0) + 1;
     const prevHash = last?.hash ?? GENESIS;
     const hash = computeHash({ seq, projectId: args.projectId, createdAt: args.createdAt, prevHash, content: args.content });
-    const id = randomUUID().slice(0, 8);
+    const id = args.id ?? randomUUID().slice(0, 8);
     db()
       .prepare(
         "INSERT INTO log_entries (id,project_id,seq,created_at,prev_hash,hash,content_json,score) VALUES (?,?,?,?,?,?,?,?)",

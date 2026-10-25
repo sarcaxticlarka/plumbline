@@ -2,7 +2,7 @@ import "server-only";
 import * as repo from "./repo";
 import * as authRepo from "./repo-auth";
 import { hashPassword } from "@/lib/auth/password";
-import type { Role } from "@/lib/auth/permissions";
+import { DEMO_PASSWORD, DEMO_USERS, SCHOOL_SUPER, demoUserId } from "@/lib/auth/demo";
 import { addDays, todayLocal, toUtc } from "@/lib/domain/dates";
 import { fetchSiteWeatherRange } from "@/lib/weather";
 import { RULE_PRESETS, type WeatherEvidence } from "@/lib/domain/types";
@@ -28,20 +28,12 @@ const T = {
   pour: `Clear and 57 degrees. 14 ironworkers, 10 carpenters and 6 laborers on site. 12 concrete finishers from Metro Ready Mix placed the level 4 slab, about 180 yards, and finished by four. Laborers stripped forms and cleaned up. Toolbox talk on concrete placement, no incidents. The city inspector visited and the post-pour walkthrough was fine.`,
 };
 
-/** Demo accounts (shown on the login page only when PLUMBLINE_DEMO is on). Shared password, demo data only. */
-export const DEMO_PASSWORD = "plumbline-demo";
-export const DEMO_USERS: { email: string; name: string; role: Role; blurb: string }[] = [
-  { email: "maya@northline.test", name: "Maya Chen", role: "superintendent", blurb: "Dictates & seals logs" },
-  { email: "dev@northline.test", name: "Dev Patel", role: "pm", blurb: "Sends notices, anchors, manages team" },
-  { email: "priya@northline.test", name: "Priya Nair", role: "claims_reviewer", blurb: "Reviews, exports, anchors" },
-  { email: "rep@harborpoint.test", name: "Jordan Reyes", role: "owner_rep", blurb: "Read-only owner’s rep" },
-];
-const SCHOOL_SUPER = { email: "luis@northline.test", name: "Luis Ortega" };
+export { DEMO_PASSWORD, DEMO_USERS } from "@/lib/auth/demo";
 
 async function ensureUser(email: string, name: string) {
   const existing = authRepo.getUserByEmail(email);
   if (existing) return { id: existing.id, email, name: existing.name };
-  return authRepo.createUser(email, name, await hashPassword(DEMO_PASSWORD));
+  return authRepo.createUser(email, name, await hashPassword(DEMO_PASSWORD), demoUserId(email));
 }
 
 let seeding: Promise<void> | null = null;
@@ -93,6 +85,7 @@ async function seed() {
   people.set(SCHOOL_SUPER.email, await ensureUser(SCHOOL_SUPER.email, SCHOOL_SUPER.name));
 
   const project = repo.insertProject({
+    id: "harbor-point",
     ownerName: "Jordan Reyes",
     ownerEmail: "rep@harborpoint.test",
     name: "Harbor Point Tower — Podium & Levels 3–6",
@@ -112,7 +105,7 @@ async function seed() {
     await sealLog(
       project.id,
       { logDate: d, author: AUTHOR, authorId: people.get("maya@northline.test")!.id, transcript: plan[d], source: "voice", attachments: [], addendumOf: null },
-      { createdAt: `${addDays(d, lateByDays)}T14:30:00.000Z`, forceLocal: true, weather: get(d) },
+      { createdAt: `${addDays(d, lateByDays)}T14:30:00.000Z`, forceLocal: true, weather: get(d), id: `${project.id}-${String(use.indexOf(d) + 1).padStart(2, "0")}` },
     );
   }
 
@@ -137,6 +130,7 @@ async function seed() {
   }
 
   const school = repo.insertProject({
+    id: "riverside-elementary",
     ownerName: "Newark Public Schools",
     ownerEmail: "facilities@npsd.test",
     name: "Riverside Elementary — Gym Addition",
@@ -156,7 +150,7 @@ async function seed() {
     await sealLog(
       school.id,
       { logDate: sDays[i], author: "Luis Ortega", authorId: people.get(SCHOOL_SUPER.email)!.id, transcript: sPlan[i], source: "text", attachments: [], addendumOf: null },
-      { createdAt: `${sDays[i]}T14:30:00.000Z`, forceLocal: true, weather: null },
+      { createdAt: `${sDays[i]}T14:30:00.000Z`, forceLocal: true, weather: null, id: `${school.id}-${String(i + 1).padStart(2, "0")}` },
     );
   }
 }
